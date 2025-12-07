@@ -47,9 +47,6 @@ COPY server ./server
 RUN mkdir -p data logs && \
     chown -R nodejs:nodejs /app
 
-# 复制默认数据文件（如果存在）
-COPY --chown=nodejs:nodejs data/*.json data/ 2>/dev/null || true
-
 # 切换到非 root 用户
 USER nodejs
 
