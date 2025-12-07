@@ -115,31 +115,72 @@ function extractCompleteEventData(sseStream: string): any | null {
 
 // Execute with token rotation
 async function executeWithTokenRotation<T>(apiCall: (token: string | null) => Promise<T>): Promise<T> {
-  const tokens = tokenManager.getTokens();
-  const maxRetries = Math.max(tokens.length, 1);
+  const allTokens = tokenManager.getTokens();
+  const maxRetries = Math.max(allTokens.length, 1);
   let lastError: Error | null = null;
+  const triedTokenIds = new Set<string>();
+  
+  console.log(`[TokenRotation] Starting with ${allTokens.length} tokens available, max retries: ${maxRetries}`);
   
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const token = tokenManager.getNextToken();
+    
+    // Skip if we've already tried this token
+    if (token && triedTokenIds.has(token.id)) {
+      console.log(`[TokenRotation] Skipping already tried token: ${token.id.substring(0, 8)}...`);
+      continue;
+    }
+    
+    if (token) {
+      triedTokenIds.add(token.id);
+    }
+    
     const tokenValue = token?.token || null;
     const startTime = Date.now();
+    
+    console.log(`[TokenRotation] Attempt ${attempt + 1}/${maxRetries}, using token: ${token ? token.id.substring(0, 8) + '...' : 'none'}`);
     
     try {
       const result = await apiCall(tokenValue);
       if (token) {
-        tokenManager.markTokenSuccess(token.id, Date.now() - startTime);
+        const responseTime = Date.now() - startTime;
+        tokenManager.markTokenSuccess(token.id, responseTime);
+        console.log(`[TokenRotation] Success with token ${token.id.substring(0, 8)}... in ${responseTime}ms`);
       }
       return result;
     } catch (error: any) {
       lastError = error;
+      const reason = getFailureReason(error);
+      
+      console.log(`[TokenRotation] Failed with token ${token ? token.id.substring(0, 8) + '...' : 'none'}: ${error.message} (reason: ${reason})`);
+      
       if (token) {
-        tokenManager.markTokenFailure(token.id, getFailureReason(error));
+        tokenManager.markTokenFailure(token.id, reason);
       }
-      if (tokens.length === 0 || attempt === maxRetries - 1) break;
+      
+      // If no tokens at all, break immediately
+      if (allTokens.length === 0) {
+        console.log(`[TokenRotation] No tokens available, breaking`);
+        break;
+      }
+      
+      // Check if there are more available tokens to try
+      const availableTokens = tokenManager.getTokens().filter(t => !t.isDisabled && !triedTokenIds.has(t.id));
+      if (availableTokens.length === 0) {
+        console.log(`[TokenRotation] No more available tokens to try`);
+        break;
+      }
+      
+      // Add a small delay before retrying
+      if (attempt < maxRetries - 1) {
+        console.log(`[TokenRotation] Waiting 500ms before next attempt...`);
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     }
   }
   
-  throw lastError || new APIError(500, 'ALL_TOKENS_FAILED', 'All tokens failed');
+  console.log(`[TokenRotation] All attempts failed, tried ${triedTokenIds.size} tokens`);
+  throw lastError || new APIError(500, 'ALL_TOKENS_FAILED', 'All tokens failed. Please add more tokens or try again later.');
 }
 
 // ============ API Handlers ============

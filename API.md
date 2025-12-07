@@ -39,6 +39,11 @@ pm2 start ecosystem.config.cjs
 GET /api/health
 ```
 
+**请求示例:**
+```bash
+curl http://localhost:3001/api/health
+```
+
 **响应:**
 ```json
 {
@@ -225,6 +230,8 @@ X-Admin-Password: affadsense
 Content-Type: application/json
 ```
 
+#### 单个添加
+
 **请求参数:**
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -244,6 +251,40 @@ curl -X POST http://localhost:3001/api/tokens \
 {
   "success": true,
   "message": "Token added successfully"
+}
+```
+
+#### 批量添加
+
+**请求参数:**
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| tokens | array | ✅ | 令牌数组，可以是字符串或对象 |
+
+**请求示例:**
+```bash
+curl -X POST http://localhost:3001/api/tokens \
+  -H "X-Admin-Password: affadsense" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tokens": [
+      "hf_token_111111",
+      "hf_token_222222",
+      {"token": "hf_token_333333", "name": "Token 3"}
+    ]
+  }'
+```
+
+**成功响应:**
+```json
+{
+  "success": true,
+  "message": "Added 3/3 tokens",
+  "results": [
+    {"token": "hf_token...", "success": true, "message": "Added"},
+    {"token": "hf_token...", "success": true, "message": "Added"},
+    {"token": "hf_token...", "success": true, "message": "Added"}
+  ]
 }
 ```
 
@@ -267,6 +308,60 @@ curl -X DELETE http://localhost:3001/api/tokens/token-id-here \
 {
   "success": true,
   "message": "Token removed successfully"
+}
+```
+
+---
+
+### 8. 重置禁用令牌 (需要管理密码)
+
+```
+POST /api/tokens/reset
+X-Admin-Password: affadsense
+```
+
+**请求示例:**
+```bash
+curl -X POST http://localhost:3001/api/tokens/reset \
+  -H "X-Admin-Password: affadsense"
+```
+
+**成功响应:**
+```json
+{
+  "success": true,
+  "message": "Reset 2 disabled tokens",
+  "resetCount": 2
+}
+```
+
+---
+
+### 9. API 文档
+
+```
+GET /api
+```
+
+**请求示例:**
+```bash
+curl http://localhost:3001/api
+```
+
+**响应:**
+```json
+{
+  "name": "Peinture API",
+  "version": "1.0.0",
+  "endpoints": {
+    "GET /api/health": "Health check",
+    "POST /api/generate": "Generate image (body: {prompt, model?, aspectRatio?, seed?, enableHD?})",
+    "POST /api/upscale": "Upscale image to 4K (body: {url, width?, height?})",
+    "POST /api/optimize-prompt": "Optimize prompt (body: {prompt})",
+    "GET /api/tokens/stats": "Get token stats (header: X-Admin-Password)",
+    "POST /api/tokens": "Add token(s) (header: X-Admin-Password, body: {token, name?} or {tokens: [...]})",
+    "DELETE /api/tokens/:id": "Remove token (header: X-Admin-Password)"
+  }
 }
 ```
 
@@ -323,3 +418,248 @@ curl -X DELETE http://localhost:3001/api/tokens/token-id-here \
 - **智能禁用**: 连续失败 3 次的令牌临时禁用 5 分钟
 - **统计追踪**: 记录每个令牌的调用次数、成功率、响应时间
 - **4K 幂等性**: 已是 4K 的图片不会重复放大
+
+---
+
+## 前端调用示例
+
+本应用提供图片生成和 4K 放大功能，以下是前端 JavaScript/TypeScript 调用方式。
+
+### 1. 生成图片
+
+```typescript
+// 基础调用
+const response = await fetch('/api/generate', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    prompt: 'A beautiful sunset over mountains',
+    model: 'z-image-turbo',
+    aspectRatio: '16:9',
+    enableHD: true
+  })
+});
+const result = await response.json();
+
+if (result.success) {
+  console.log('图片 URL:', result.url);
+  console.log('种子:', result.seed);
+} else {
+  console.error('错误:', result.message);
+}
+```
+
+```typescript
+// 使用 qwen-image-fast 模型
+const response = await fetch('/api/generate', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    prompt: '一只可爱的猫咪',
+    model: 'qwen-image-fast',
+    aspectRatio: '1:1',
+    seed: 12345
+  })
+});
+```
+
+### 2. 4K 放大
+
+```typescript
+const response = await fetch('/api/upscale', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    url: 'https://example.com/image.jpg',
+    width: 1024,
+    height: 768
+  })
+});
+const result = await response.json();
+
+if (result.success) {
+  if (result.isAlready4K) {
+    console.log('图片已是 4K，无需放大');
+  } else {
+    console.log('放大后 URL:', result.url);
+  }
+}
+```
+
+### 3. 优化提示词
+
+```typescript
+const response = await fetch('/api/optimize-prompt', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    prompt: 'A cat'
+  })
+});
+const result = await response.json();
+
+if (result.success) {
+  console.log('原始提示词:', result.original);
+  console.log('优化后:', result.optimized);
+}
+```
+
+### 4. 健康检查
+
+```typescript
+const response = await fetch('/api/health');
+const result = await response.json();
+
+console.log('服务状态:', result.status);
+console.log('令牌数量:', result.tokenCount);
+```
+
+### 5. 令牌管理 (需要管理密码)
+
+```typescript
+// 获取令牌统计
+const statsResponse = await fetch('/api/tokens/stats', {
+  headers: { 'X-Admin-Password': 'your-admin-password' }
+});
+const stats = await statsResponse.json();
+
+// 添加单个令牌
+const addResponse = await fetch('/api/tokens', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Admin-Password': 'your-admin-password'
+  },
+  body: JSON.stringify({
+    token: 'hf_xxxxx',
+    name: 'My Token'
+  })
+});
+
+// 批量添加令牌
+const batchResponse = await fetch('/api/tokens', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Admin-Password': 'your-admin-password'
+  },
+  body: JSON.stringify({
+    tokens: [
+      'hf_token_111111',
+      { token: 'hf_token_222222', name: 'Token 2' }
+    ]
+  })
+});
+
+// 删除令牌
+const deleteResponse = await fetch('/api/tokens/token-id-here', {
+  method: 'DELETE',
+  headers: { 'X-Admin-Password': 'your-admin-password' }
+});
+
+// 重置禁用令牌
+const resetResponse = await fetch('/api/tokens/reset', {
+  method: 'POST',
+  headers: { 'X-Admin-Password': 'your-admin-password' }
+});
+```
+
+### 6. 错误处理
+
+```typescript
+async function generateWithErrorHandling(prompt: string) {
+  try {
+    const response = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt })
+    });
+    
+    const result = await response.json();
+    
+    if (!response.ok || result.error) {
+      switch (result.code) {
+        case 'INVALID_PARAMS':
+          console.error('参数无效:', result.message);
+          break;
+        case 'QUOTA_EXCEEDED':
+          console.error('配额已用完，请稍后重试');
+          break;
+        case 'ALL_TOKENS_FAILED':
+          console.error('所有令牌失败，请添加更多令牌');
+          break;
+        default:
+          console.error('生成失败:', result.message);
+      }
+      return null;
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('网络错误:', error);
+    return null;
+  }
+}
+```
+
+### 7. React Hook 示例
+
+```typescript
+import { useState } from 'react';
+
+function useImageGeneration() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const generate = async (prompt: string, options = {}) => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, ...options })
+      });
+      
+      const result = await response.json();
+      
+      if (result.error) {
+        setError(result.message);
+        return null;
+      }
+      
+      return result;
+    } catch (err) {
+      setError('网络请求失败');
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return { generate, loading, error };
+}
+
+// 使用示例
+function ImageGenerator() {
+  const { generate, loading, error } = useImageGeneration();
+  
+  const handleGenerate = async () => {
+    const result = await generate('A cute cat', {
+      model: 'z-image-turbo',
+      aspectRatio: '16:9'
+    });
+    
+    if (result) {
+      console.log('生成成功:', result.url);
+    }
+  };
+  
+  return (
+    <button onClick={handleGenerate} disabled={loading}>
+      {loading ? '生成中...' : '生成图片'}
+    </button>
+  );
+}
+```

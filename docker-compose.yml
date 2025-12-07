@@ -2,21 +2,20 @@ version: '3.8'
 
 services:
   peinture:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/YOUR_USERNAME/peinture:latest
     container_name: peinture
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "${PORT:-1997}:3001"
     volumes:
-      # 持久化数据 (令牌、统计)
+      # 数据映射到当前目录 - 令牌和统计数据会持久化
       - ./data:/app/data
-      # 日志
       - ./logs:/app/logs
     environment:
       - NODE_ENV=production
       - PORT=3001
+    # 确保数据目录存在
+    user: "1001:1001"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/api/health"]
       interval: 30s
@@ -34,9 +33,6 @@ services:
       - "443:443"
     volumes:
       - ./nginx.docker.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./dist:/usr/share/nginx/html:ro
-      # SSL 证书 (如果有)
-      # - ./ssl:/etc/nginx/ssl:ro
     depends_on:
       - peinture
     profiles:

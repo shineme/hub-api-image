@@ -20,14 +20,27 @@ import {
   Save,
   X
 } from 'lucide-react';
-import { tokenManager } from '../services/tokenManager';
-import { HFToken, TokenStats } from '../types/tokenTypes';
+
+// API base URL - use relative path for same-origin requests
+const API_BASE = '/api';
 
 const ADMIN_PASSWORD = 'affadsense';
 const ADMIN_AUTH_KEY = 'admin_authenticated';
 
-interface TokenWithStats extends HFToken {
-  stats: TokenStats;
+interface TokenWithStats {
+  id: string;
+  token: string;
+  name?: string;
+  status: 'active' | 'disabled' | 'quota_exceeded';
+  isDisabled: boolean;
+  failureCount: number;
+  consecutiveFailures: number;
+  lastUsed: number;
+  disabledUntil?: number;
+  usageCount: number;
+  totalRequests: number;
+  successCount: number;
+  averageResponseTime: number;
 }
 
 export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
@@ -43,6 +56,9 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [editingToken, setEditingToken] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [showTokens, setShowTokens] = useState<Record<string, boolean>>({});
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchTokens, setBatchTokens] = useState('');
+  const [batchResult, setBatchResult] = useState<{ success: number; failed: number } | null>(null);
 
   useEffect(() => {
     // Check if already authenticated
@@ -58,22 +74,40 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     }
   }, [isAuthenticated]);
 
-  const loadTokens = () => {
-    const allTokens = tokenManager.getTokens();
-    const allStats = tokenManager.getAllTokenStats();
-    
-    const tokensWithStats: TokenWithStats[] = allTokens.map(token => ({
-      ...token,
-      stats: allStats[token.id] || {
-        totalRequests: 0,
-        successCount: 0,
-        failureCount: 0,
-        lastUsed: null,
-        averageResponseTime: 0
+  const loadTokens = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/tokens/stats`, {
+        headers: { 'X-Admin-Password': ADMIN_PASSWORD }
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to load tokens');
       }
-    }));
-    
-    setTokens(tokensWithStats);
+      
+      const data = await response.json();
+      
+      const tokensWithStats: TokenWithStats[] = data.stats.map((item: any) => ({
+        id: item.id,
+        token: item.token || `hf_****${item.id.slice(-4)}`,
+        name: item.name,
+        status: item.isDisabled ? 'disabled' : 'active',
+        isDisabled: item.isDisabled,
+        failureCount: item.failureCount || 0,
+        consecutiveFailures: item.consecutiveFailures || 0,
+        lastUsed: item.lastUsed || 0,
+        disabledUntil: item.disabledUntil,
+        usageCount: item.totalRequests || 0,
+        totalRequests: item.totalRequests || 0,
+        successCount: item.successCount || 0,
+        averageResponseTime: item.averageResponseTime || 0
+      }));
+      
+      setTokens(tokensWithStats);
+    } catch (error) {
+      console.error('Failed to load tokens:', error);
+      setError('加载令牌失败');
+      setTimeout(() => setError(''), 3000);
+    }
   };
 
   const handleLogin = () => {
@@ -92,36 +126,117 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     onClose();
   };
 
-  const handleAddToken = () => {
+  const handleAddToken = async () => {
     if (!newToken.trim()) return;
     
-    const success = tokenManager.addToken(newToken.trim(), newTokenName.trim() || undefined);
-    if (success) {
+    try {
+      const response = await fetch(`${API_BASE}/tokens`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Admin-Password': ADMIN_PASSWORD
+        },
+        body: JSON.stringify({
+          token: newToken.trim(),
+          name: newTokenName.trim() || undefined
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok || data.error) {
+        throw new Error(data.message || 'Failed to add token');
+      }
+      
       setNewToken('');
       setNewTokenName('');
       loadTokens();
-    } else {
-      setError('令牌格式无效或已存在');
+    } catch (e: any) {
+      setError(e.message || '令牌格式无效或已存在');
       setTimeout(() => setError(''), 3000);
     }
   };
 
-  const handleRemoveToken = (tokenId: string) => {
+  const handleBatchAdd = async () => {
+    if (!batchTokens.trim()) return;
+    
+    // 按行分割，支持多种分隔符
+    const lines = batchTokens
+      .split(/[\n,;]+/)
+      .map(line => line.trim())
+      .filter(line => line.length > 0);
+    
+    try {
+      const response = await fetch(`${API_BASE}/tokens`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Admin-Password': ADMIN_PASSWORD
+        },
+        body: JSON.stringify({ tokens: lines })
+      });
+      
+      const data = await response.json();
+      
+      const successCount = data.results?.filter((r: any) => r.success).length || 0;
+      const failedCount = data.results?.filter((r: any) => !r.success).length || 0;
+      
+      setBatchResult({ success: successCount, failed: failedCount });
+      if (successCount > 0) {
+        loadTokens();
+        setBatchTokens('');
+      }
+    } catch (e) {
+      setError('批量添加失败');
+      setTimeout(() => setError(''), 3000);
+    }
+    
+    setTimeout(() => setBatchResult(null), 5000);
+  };
+
+  const handleRemoveToken = async (tokenId: string) => {
     if (confirm('确定要删除此令牌吗？')) {
-      tokenManager.removeToken(tokenId);
-      loadTokens();
+      try {
+        const response = await fetch(`${API_BASE}/tokens/${tokenId}`, {
+          method: 'DELETE',
+          headers: { 'X-Admin-Password': ADMIN_PASSWORD }
+        });
+        
+        if (!response.ok) {
+          throw new Error('Failed to remove token');
+        }
+        
+        loadTokens();
+      } catch (e) {
+        setError('删除令牌失败');
+        setTimeout(() => setError(''), 3000);
+      }
     }
   };
 
   const handleUpdateTokenName = (tokenId: string) => {
-    tokenManager.updateToken(tokenId, { name: editName });
+    // 前端 tokenManager 不支持更新名称，只能更新 token 值
+    // 这里暂时只关闭编辑模式
     setEditingToken(null);
-    loadTokens();
   };
 
-  const handleResetStats = (tokenId: string) => {
-    tokenManager.resetTokenStats(tokenId);
-    loadTokens();
+  const handleResetStats = async (tokenId: string) => {
+    try {
+      // 重置单个令牌 - 服务端暂不支持单个重置，使用全部重置
+      const response = await fetch(`${API_BASE}/tokens/reset`, {
+        method: 'POST',
+        headers: { 'X-Admin-Password': ADMIN_PASSWORD }
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to reset token');
+      }
+      
+      loadTokens();
+    } catch (e) {
+      setError('重置令牌失败');
+      setTimeout(() => setError(''), 3000);
+    }
   };
 
   const toggleShowToken = (tokenId: string) => {
@@ -134,11 +249,15 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   };
 
   const getTokenStatus = (token: TokenWithStats) => {
-    if (token.isDisabled) {
+    if (token.isDisabled || token.status === 'disabled') {
       const remaining = token.disabledUntil ? token.disabledUntil - Date.now() : 0;
       if (remaining > 0) {
         return { status: 'disabled', label: `禁用中 (${Math.ceil(remaining / 60000)}分钟后恢复)`, color: 'text-red-400' };
       }
+      return { status: 'disabled', label: '已禁用', color: 'text-red-400' };
+    }
+    if (token.status === 'quota_exceeded') {
+      return { status: 'warning', label: '配额耗尽', color: 'text-yellow-400' };
     }
     if (token.consecutiveFailures >= 3) {
       return { status: 'warning', label: '多次失败', color: 'text-yellow-400' };
@@ -146,9 +265,9 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     return { status: 'active', label: '活跃', color: 'text-green-400' };
   };
 
-  const getSuccessRate = (stats: TokenStats) => {
-    if (stats.totalRequests === 0) return 0;
-    return Math.round((stats.successCount / stats.totalRequests) * 100);
+  const getSuccessRate = (token: TokenWithStats) => {
+    if (token.totalRequests === 0) return 0;
+    return Math.round((token.successCount / token.totalRequests) * 100);
   };
 
   const formatTime = (timestamp: number | null) => {
@@ -158,10 +277,10 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
   // Calculate overall stats
   const overallStats = tokens.reduce((acc, t) => ({
-    totalRequests: acc.totalRequests + t.stats.totalRequests,
-    successCount: acc.successCount + t.stats.successCount,
-    failureCount: acc.failureCount + t.stats.failureCount,
-    activeTokens: acc.activeTokens + (t.isDisabled ? 0 : 1),
+    totalRequests: acc.totalRequests + (t.totalRequests || 0),
+    successCount: acc.successCount + (t.successCount || 0),
+    failureCount: acc.failureCount + (t.failureCount || 0),
+    activeTokens: acc.activeTokens + (!t.isDisabled ? 1 : 0),
     disabledTokens: acc.disabledTokens + (t.isDisabled ? 1 : 0)
   }), { totalRequests: 0, successCount: 0, failureCount: 0, activeTokens: 0, disabledTokens: 0 });
 
@@ -283,31 +402,84 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <div className="space-y-6">
               {/* Add Token Form */}
               <div className="p-4 bg-white/5 rounded-lg border border-white/10">
-                <h3 className="text-sm font-medium text-white mb-3">添加新令牌</h3>
-                <div className="flex gap-3">
-                  <input
-                    type="text"
-                    value={newTokenName}
-                    onChange={(e) => setNewTokenName(e.target.value)}
-                    placeholder="名称 (可选)"
-                    className="w-32 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50"
-                  />
-                  <input
-                    type="text"
-                    value={newToken}
-                    onChange={(e) => setNewToken(e.target.value)}
-                    placeholder="输入 Hugging Face Token (hf_...)"
-                    className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50"
-                  />
-                  <button
-                    onClick={handleAddToken}
-                    disabled={!newToken.trim()}
-                    className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
-                  >
-                    <Plus className="w-4 h-4" />
-                    添加
-                  </button>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-medium text-white">添加令牌</h3>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setBatchMode(false)}
+                      className={`px-3 py-1 text-xs rounded-lg transition-colors ${
+                        !batchMode ? 'bg-purple-600 text-white' : 'bg-white/5 text-white/60 hover:text-white'
+                      }`}
+                    >
+                      单个
+                    </button>
+                    <button
+                      onClick={() => setBatchMode(true)}
+                      className={`px-3 py-1 text-xs rounded-lg transition-colors ${
+                        batchMode ? 'bg-purple-600 text-white' : 'bg-white/5 text-white/60 hover:text-white'
+                      }`}
+                    >
+                      批量
+                    </button>
+                  </div>
                 </div>
+                
+                {!batchMode ? (
+                  <div className="flex gap-3">
+                    <input
+                      type="text"
+                      value={newTokenName}
+                      onChange={(e) => setNewTokenName(e.target.value)}
+                      placeholder="名称 (可选)"
+                      className="w-32 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                    />
+                    <input
+                      type="text"
+                      value={newToken}
+                      onChange={(e) => setNewToken(e.target.value)}
+                      placeholder="输入 Hugging Face Token (hf_...)"
+                      className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                    />
+                    <button
+                      onClick={handleAddToken}
+                      disabled={!newToken.trim()}
+                      className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
+                    >
+                      <Plus className="w-4 h-4" />
+                      添加
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <textarea
+                      value={batchTokens}
+                      onChange={(e) => setBatchTokens(e.target.value)}
+                      placeholder="每行一个令牌，或用逗号/分号分隔&#10;hf_token_111111&#10;hf_token_222222&#10;hf_token_333333"
+                      className="w-full h-32 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 resize-none font-mono"
+                    />
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-white/40">
+                        支持换行、逗号、分号分隔
+                      </span>
+                      <button
+                        onClick={handleBatchAdd}
+                        disabled={!batchTokens.trim()}
+                        className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
+                      >
+                        <Plus className="w-4 h-4" />
+                        批量添加
+                      </button>
+                    </div>
+                    {batchResult && (
+                      <div className={`p-2 rounded-lg text-sm ${
+                        batchResult.failed === 0 ? 'bg-green-500/10 text-green-400' : 'bg-yellow-500/10 text-yellow-400'
+                      }`}>
+                        成功添加 {batchResult.success} 个令牌
+                        {batchResult.failed > 0 && `，${batchResult.failed} 个失败（无效或已存在）`}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Token List */}
@@ -321,7 +493,7 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 ) : (
                   tokens.map((token) => {
                     const status = getTokenStatus(token);
-                    const successRate = getSuccessRate(token.stats);
+                    const successRate = getSuccessRate(token);
                     
                     return (
                       <div
@@ -392,15 +564,15 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                             <div className="flex flex-wrap gap-4 text-xs text-white/50">
                               <span className="flex items-center gap-1">
                                 <Activity className="w-3 h-3" />
-                                调用: {token.stats.totalRequests}
+                                调用: {token.totalRequests}
                               </span>
                               <span className="flex items-center gap-1 text-green-400">
                                 <CheckCircle className="w-3 h-3" />
-                                成功: {token.stats.successCount}
+                                成功: {token.successCount}
                               </span>
                               <span className="flex items-center gap-1 text-red-400">
                                 <XCircle className="w-3 h-3" />
-                                失败: {token.stats.failureCount}
+                                失败: {token.failureCount}
                               </span>
                               <span className="flex items-center gap-1">
                                 <TrendingUp className="w-3 h-3" />
@@ -408,7 +580,7 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                               </span>
                               <span className="flex items-center gap-1">
                                 <Clock className="w-3 h-3" />
-                                {formatTime(token.stats.lastUsed)}
+                                {formatTime(token.lastUsed)}
                               </span>
                             </div>
                           </div>
@@ -517,7 +689,7 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                   <tbody>
                     {tokens.map((token) => {
                       const status = getTokenStatus(token);
-                      const successRate = getSuccessRate(token.stats);
+                      const successRate = getSuccessRate(token);
                       
                       return (
                         <tr key={token.id} className="border-b border-white/5 hover:bg-white/5">
@@ -529,22 +701,22 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                               {status.status === 'active' ? '●' : status.status === 'disabled' ? '○' : '◐'}
                             </span>
                           </td>
-                          <td className="py-3 text-right text-white/70">{token.stats.totalRequests}</td>
-                          <td className="py-3 text-right text-green-400">{token.stats.successCount}</td>
-                          <td className="py-3 text-right text-red-400">{token.stats.failureCount}</td>
+                          <td className="py-3 text-right text-white/70">{token.totalRequests}</td>
+                          <td className="py-3 text-right text-green-400">{token.successCount}</td>
+                          <td className="py-3 text-right text-red-400">{token.failureCount}</td>
                           <td className="py-3 text-right">
                             <span className={successRate >= 80 ? 'text-green-400' : successRate >= 50 ? 'text-yellow-400' : 'text-red-400'}>
                               {successRate}%
                             </span>
                           </td>
                           <td className="py-3 text-right text-white/50">
-                            {token.stats.averageResponseTime > 0 
-                              ? `${(token.stats.averageResponseTime / 1000).toFixed(1)}s` 
+                            {token.averageResponseTime > 0 
+                              ? `${(token.averageResponseTime / 1000).toFixed(1)}s` 
                               : '-'}
                           </td>
                           <td className="py-3 text-right text-white/50 text-xs">
-                            {token.stats.lastUsed 
-                              ? new Date(token.stats.lastUsed).toLocaleTimeString('zh-CN')
+                            {token.lastUsed 
+                              ? new Date(token.lastUsed).toLocaleTimeString('zh-CN')
                               : '-'}
                           </td>
                         </tr>
@@ -702,6 +874,75 @@ try {
   }
 }`}</code>
                 </pre>
+              </div>
+
+              {/* curl Examples */}
+              <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+                <h4 className="text-blue-400 font-medium mb-3 flex items-center gap-2">
+                  <Zap className="w-4 h-4" />
+                  curl 命令示例
+                </h4>
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-white/70 text-sm mb-2">生成图片:</p>
+                    <pre className="bg-black/30 p-3 rounded-lg text-xs overflow-x-auto">
+                      <code className="text-cyan-400">{`curl -X POST http://localhost:3001/api/generate \\
+  -H "Content-Type: application/json" \\
+  -d '{"prompt": "A beautiful sunset", "model": "z-image-turbo", "aspectRatio": "16:9", "enableHD": true}'`}</code>
+                    </pre>
+                  </div>
+                  
+                  <div>
+                    <p className="text-white/70 text-sm mb-2">4K 放大:</p>
+                    <pre className="bg-black/30 p-3 rounded-lg text-xs overflow-x-auto">
+                      <code className="text-cyan-400">{`curl -X POST http://localhost:3001/api/upscale \\
+  -H "Content-Type: application/json" \\
+  -d '{"url": "https://example.com/image.jpg", "width": 1024, "height": 768}'`}</code>
+                    </pre>
+                  </div>
+                  
+                  <div>
+                    <p className="text-white/70 text-sm mb-2">优化提示词:</p>
+                    <pre className="bg-black/30 p-3 rounded-lg text-xs overflow-x-auto">
+                      <code className="text-cyan-400">{`curl -X POST http://localhost:3001/api/optimize-prompt \\
+  -H "Content-Type: application/json" \\
+  -d '{"prompt": "A cat"}'`}</code>
+                    </pre>
+                  </div>
+                  
+                  <div>
+                    <p className="text-white/70 text-sm mb-2">健康检查:</p>
+                    <pre className="bg-black/30 p-3 rounded-lg text-xs overflow-x-auto">
+                      <code className="text-cyan-400">{`curl http://localhost:3001/api/health`}</code>
+                    </pre>
+                  </div>
+                  
+                  <div>
+                    <p className="text-white/70 text-sm mb-2">令牌统计 (需要管理密码):</p>
+                    <pre className="bg-black/30 p-3 rounded-lg text-xs overflow-x-auto">
+                      <code className="text-cyan-400">{`curl http://localhost:3001/api/tokens/stats \\
+  -H "X-Admin-Password: your-password"`}</code>
+                    </pre>
+                  </div>
+                  
+                  <div>
+                    <p className="text-white/70 text-sm mb-2">添加令牌 (需要管理密码):</p>
+                    <pre className="bg-black/30 p-3 rounded-lg text-xs overflow-x-auto">
+                      <code className="text-cyan-400">{`curl -X POST http://localhost:3001/api/tokens \\
+  -H "X-Admin-Password: your-password" \\
+  -H "Content-Type: application/json" \\
+  -d '{"token": "hf_xxxxx", "name": "My Token"}'`}</code>
+                    </pre>
+                  </div>
+                  
+                  <div>
+                    <p className="text-white/70 text-sm mb-2">删除令牌 (需要管理密码):</p>
+                    <pre className="bg-black/30 p-3 rounded-lg text-xs overflow-x-auto">
+                      <code className="text-cyan-400">{`curl -X DELETE http://localhost:3001/api/tokens/token-id \\
+  -H "X-Admin-Password: your-password"`}</code>
+                    </pre>
+                  </div>
+                </div>
               </div>
 
               {/* Token Management Note */}

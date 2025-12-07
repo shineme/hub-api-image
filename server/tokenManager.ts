@@ -138,22 +138,50 @@ class ServerTokenManager {
     if (this.tokens.length === 0) return null;
 
     const now = Date.now();
-    const availableTokens = this.tokens.filter(t => {
-      if (!t.isDisabled) return true;
-      if (t.disabledUntil && t.disabledUntil <= now) {
-        t.isDisabled = false;
-        t.disabledUntil = null;
-        t.consecutiveFailures = 0;
-        return true;
+    
+    // First, re-enable any tokens whose disable period has passed
+    for (const token of this.tokens) {
+      if (token.isDisabled && token.disabledUntil && token.disabledUntil <= now) {
+        token.isDisabled = false;
+        token.disabledUntil = null;
+        token.consecutiveFailures = 0;
+        console.log(`[TokenManager] Re-enabled token: ${token.id.substring(0, 8)}...`);
+        this.saveTokens();
       }
-      return false;
-    });
+    }
+    
+    // Get available tokens (not disabled)
+    let availableTokens = this.tokens.filter(t => !t.isDisabled);
+    
+    console.log(`[TokenManager] Available tokens: ${availableTokens.length}/${this.tokens.length}`);
 
-    if (availableTokens.length === 0) return null;
+    // If all tokens are disabled, use all tokens anyway (they might work now)
+    if (availableTokens.length === 0) {
+      console.log(`[TokenManager] All tokens disabled, using all tokens anyway`);
+      availableTokens = [...this.tokens];
+      
+      // Find the token with the earliest disabledUntil time
+      availableTokens.sort((a, b) => {
+        const aTime = a.disabledUntil || 0;
+        const bTime = b.disabledUntil || 0;
+        return aTime - bTime;
+      });
+    }
 
-    this.currentIndex = this.currentIndex % availableTokens.length;
+    if (availableTokens.length === 0) {
+      console.log(`[TokenManager] No tokens at all!`);
+      return null;
+    }
+
+    // Ensure currentIndex is valid
+    if (this.currentIndex >= availableTokens.length) {
+      this.currentIndex = 0;
+    }
+    
     const token = availableTokens[this.currentIndex];
     this.currentIndex = (this.currentIndex + 1) % availableTokens.length;
+    
+    console.log(`[TokenManager] Selected token: ${token.id.substring(0, 8)}... (disabled: ${token.isDisabled}, index: ${this.currentIndex})`);
 
     return token;
   }
@@ -182,13 +210,18 @@ class ServerTokenManager {
 
   markTokenFailure(tokenId: string, reason: FailureReason): void {
     const token = this.tokens.find(t => t.id === tokenId);
-    if (!token) return;
+    if (!token) {
+      console.log(`[TokenManager] Token not found for failure: ${tokenId}`);
+      return;
+    }
 
     token.consecutiveFailures++;
+    console.log(`[TokenManager] Token ${tokenId.substring(0, 8)}... failed (reason: ${reason}, consecutive: ${token.consecutiveFailures})`);
 
     if (token.consecutiveFailures >= this.settings.maxConsecutiveFailures) {
       token.isDisabled = true;
       token.disabledUntil = Date.now() + this.settings.tokenDisableDuration;
+      console.log(`[TokenManager] Token ${tokenId.substring(0, 8)}... DISABLED until ${new Date(token.disabledUntil).toISOString()}`);
     }
 
     if (!this.stats[tokenId]) {
@@ -202,6 +235,36 @@ class ServerTokenManager {
 
     this.saveTokens();
     this.saveStats();
+  }
+
+  resetToken(tokenId: string): boolean {
+    const token = this.tokens.find(t => t.id === tokenId);
+    if (!token) return false;
+    
+    token.isDisabled = false;
+    token.disabledUntil = null;
+    token.consecutiveFailures = 0;
+    
+    console.log(`[TokenManager] Manually reset token: ${tokenId.substring(0, 8)}...`);
+    this.saveTokens();
+    return true;
+  }
+
+  resetAllTokens(): number {
+    let count = 0;
+    for (const token of this.tokens) {
+      if (token.isDisabled) {
+        token.isDisabled = false;
+        token.disabledUntil = null;
+        token.consecutiveFailures = 0;
+        count++;
+      }
+    }
+    if (count > 0) {
+      console.log(`[TokenManager] Reset ${count} disabled tokens`);
+      this.saveTokens();
+    }
+    return count;
   }
 
   getAllTokenStats(): Record<string, TokenStats> {

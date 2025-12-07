@@ -4,8 +4,45 @@
 
 ## 目录
 
+- [快速启动 (一行命令)](#快速启动-一行命令)
 - [Docker 部署 (推荐)](#docker-部署-推荐)
 - [手动部署](#手动部署)
+
+---
+
+## 快速启动 (一行命令)
+
+```bash
+# 端口 1997，数据保存在当前目录
+docker run -d --name peinture --restart unless-stopped \
+  -p 1997:3001 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  ghcr.io/YOUR_USERNAME/peinture:latest
+```
+
+**自定义端口:**
+```bash
+# 使用端口 8080
+docker run -d --name peinture --restart unless-stopped \
+  -p 8080:3001 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  ghcr.io/YOUR_USERNAME/peinture:latest
+```
+
+**验证启动:**
+```bash
+curl http://localhost:1997/api/health
+```
+
+**添加令牌:**
+```bash
+curl -X POST http://localhost:1997/api/tokens \
+  -H "X-Admin-Password: affadsense" \
+  -H "Content-Type: application/json" \
+  -d '{"token": "hf_xxxxx", "name": "My Token"}'
+```
 
 ---
 
@@ -24,8 +61,11 @@ curl -O https://raw.githubusercontent.com/YOUR_USERNAME/peinture/main/nginx.dock
 # 3. 创建数据目录
 mkdir -p data logs
 
-# 4. 启动服务
+# 4. 启动服务 (默认端口 1997)
 docker compose up -d
+
+# 或指定端口
+PORT=8080 docker compose up -d
 
 # 5. 查看日志
 docker compose logs -f
